@@ -20,90 +20,7 @@ If using Prometheus installed via Helm, edit the `values.yaml` or patch the conf
 kubectl edit configmap prometheus-server -n observability
 ```
 
-And under `extraScrapeConfigs`, add:
 
-```yaml
-  - job_name: 'blackbox-external-targets'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets:
-          - https://www.google.com
-          - https://www.github.com
-          - https://www.stackoverflow.com
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: prometheus-blackbox-exporter.observability.svc.cluster.local:9115
-
-  - job_name: 'blackbox-kubernetes-services'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    kubernetes_sd_configs:
-      - role: service
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - target_label: __address__
-        replacement: prometheus-blackbox-exporter.observability.svc.cluster.local:9115
-      - source_labels: [__param_target]
-        target_label: instance
-      - action: labelmap
-        regex: __meta_kubernetes_service_label_(.+)
-      - source_labels: [__meta_kubernetes_namespace]
-        target_label: kubernetes_namespace
-      - source_labels: [__meta_kubernetes_service_name]
-        target_label: kubernetes_service_name
-
-  - job_name: 'blackbox-kubernetes-ingresses'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    kubernetes_sd_configs:
-      - role: ingress
-    relabel_configs:
-      - source_labels:
-          [__meta_kubernetes_ingress_scheme, __address__, __meta_kubernetes_ingress_path]
-        regex: (.+);(.+);(.+)
-        replacement: ${1}://${2}${3}
-        target_label: __param_target
-      - target_label: __address__
-        replacement: prometheus-blackbox-exporter.observability.svc.cluster.local:9115
-      - source_labels: [__param_target]
-        target_label: instance
-      - action: labelmap
-        regex: __meta_kubernetes_ingress_label_(.+)
-      - source_labels: [__meta_kubernetes_namespace]
-        target_label: kubernetes_namespace
-      - source_labels: [__meta_kubernetes_ingress_name]
-        target_label: ingress_name
-
-  - job_name: 'blackbox-kubernetes-pods'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    kubernetes_sd_configs:
-      - role: pod
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - target_label: __address__
-        replacement: prometheus-blackbox-exporter.observability.svc.cluster.local:9115
-      - source_labels: [__param_target]
-        replacement: ${1}/health
-        target_label: instance
-      - action: labelmap
-        regex: __meta_kubernetes_pod_label_(.+)
-      - source_labels: [__meta_kubernetes_namespace]
-        target_label: kubernetes_namespace
-      - source_labels: [__meta_kubernetes_pod_name]
-        target_label: kubernetes_pod_name
-```
 
 > 🔄 Restart the `prometheus-server` pod after this update:
 
@@ -113,55 +30,68 @@ kubectl delete pod -l app=prometheus,component=server -n observability
 
 ---
 
-## ✅ 3. Deploy a Demo Pod for `/health` Probe
+## ✅ 3. Deploy Sample App + Service + Ingress (Port 8080)
 
-```yaml
-# health-demo.yaml
+```
+kubectl apply -n observability -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: health-demo
-  namespace: observability
+  name: sample-app
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: health-demo
+      app: sample-app
   template:
     metadata:
       labels:
-        app: health-demo
-      annotations:
-        blackbox.io/probe: "true"
+        app: sample-app
     spec:
       containers:
-        - name: web
-          image: hashicorp/http-echo
-          args:
-            - "-listen=:8080"
-            - "-text=ok"
-            - "-path=/health"
-          ports:
-            - containerPort: 8080
+      - name: http-echo
+        image: hashicorp/http-echo
+        args:
+          - "-listen=:8080"
+          - "-text=hello from 8080"
+        ports:
+        - containerPort: 8080
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: health-demo
-  namespace: observability
+  name: sample-app
+  labels:
+    app: sample-app
 spec:
-  selector:
-    app: health-demo
   ports:
-    - port: 8080
+    - protocol: TCP
+      port: 80
       targetPort: 8080
-      protocol: TCP
-```
+  selector:
+    app: sample-app
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sample-app-ingress
+  annotations:
+    example.io/should_be_probed: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - host: sample.127.0.0.1.nip.io
+      http:
+        paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: sample-app
+              port:
+                number: 80
+EOF
 
-Apply it:
-
-```bash
-kubectl apply -f health-demo.yaml
 ```
 
 ---
